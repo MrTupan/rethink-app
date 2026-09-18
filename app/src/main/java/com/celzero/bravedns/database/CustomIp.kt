@@ -15,6 +15,7 @@
  */
 package com.celzero.bravedns.database
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import com.celzero.bravedns.util.Constants.Companion.INIT_TIME_MS
 import com.celzero.bravedns.util.Constants.Companion.UID_EVERYBODY
@@ -31,10 +32,19 @@ class CustomIp : Serializable {
     var uid: Int = UID_EVERYBODY
     var ipAddress: String = ""
     var port: Int = UNSPECIFIED_PORT
+
+    @ColumnInfo(defaultValue = "-1")
     var fromPort: Int = UNSPECIFIED_PORT
+
+    @ColumnInfo(defaultValue = "-1")
     var toPort: Int = UNSPECIFIED_PORT
+
+    @ColumnInfo(defaultValue = "ALL")
     var protocol: String = "ALL" // "ALL", "TCP", "UDP"
+
+    @ColumnInfo(defaultValue = "0")
     var connLimit: Int = 0       // 0 = unlimited, 1, 2, etc.
+
     var isActive: Boolean = true
     var proxyId: String = ""
     var proxyCC: String = ""
