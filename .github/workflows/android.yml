@@ -43,7 +43,7 @@ jobs:
 
     - name: 🚂 Assemble APK
       run: |
-        ./gradlew ${VARIANT} --no-daemon --stacktrace --info -x test -x lint
+        ./gradlew ${VARIANT} --no-daemon --stacktrace -x test -x lint
 
     - name: 📦 Prepare APK Artifact
       if: always()
