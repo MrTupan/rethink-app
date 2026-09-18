@@ -47,6 +47,7 @@ import com.celzero.bravedns.service.IpRulesManager
 import com.celzero.bravedns.ui.activity.CustomRulesActivity
 import com.celzero.bravedns.util.Constants.Companion.INTENT_UID
 import com.celzero.bravedns.util.Constants.Companion.UID_EVERYBODY
+import com.celzero.bravedns.util.IPUtil
 import com.celzero.bravedns.util.UIUtils
 import com.celzero.bravedns.util.Utilities
 import com.celzero.bravedns.viewmodel.CustomIpViewModel
@@ -68,8 +69,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
     private var rules = CustomRulesActivity.RULES.APP_SPECIFIC_RULES
     private lateinit var adapter: CustomIpAdapter
 
-    // ActivityResultLauncher for the document picker (DEBUG import only).
-    // Must be registered in onCreate — before onStart — to survive configuration changes.
     private lateinit var importFileLauncher: ActivityResultLauncher<Array<String>>
 
     companion object {
@@ -85,11 +84,8 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Register the document picker launcher here (before onStart) so it survives
-        // configuration changes. The actual UI is only shown when DEBUG == true.
         importFileLauncher =
             registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-                // uri is null when the user dismisses the picker without selecting a file
                 uri ?: return@registerForActivityResult
                 handleImportUri(uri)
             }
@@ -102,10 +98,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
 
     override fun onResume() {
         super.onResume()
-        // fix for #1939, OEM-specific bug, especially on heavily customized Android
-        // some ROMs kill or freeze the keyboard/IME process to save memory or battery,
-        // causing SearchView to stop receiving input events
-        // this is a workaround to restart the IME process
         b.cipSearchView.setQuery("", false)
         b.cipSearchView.clearFocus()
 
@@ -228,29 +220,19 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
     }
 
     private fun setupClickListeners() {
-        // make fab to bring to front of the view as click listener is not working
-        // on some device
         b.cipAddFab.bringToFront()
         b.cipAddFab.setOnClickListener { showAddIpDialog() }
 
         b.cipSearchDeleteIcon.setOnClickListener { showIpRulesDeleteDialog() }
 
-        // Import FAB is only shown and wired up in DEBUG builds.
-        // The FAB itself is GONE in XML; this block also stays dead-code in release builds
-        // so ProGuard/R8 can strip it entirely.
         if (DEBUG) {
             b.cipImportFab.visibility = View.VISIBLE
             b.cipImportFab.setOnClickListener {
-                // Launch the system document picker; accept plain text files only
                 importFileLauncher.launch(arrayOf("text/plain"))
             }
         }
     }
 
-    /**
-     * Shows dialog to add custom IP. Provides user option to user to add ips. validates the entered
-     * input, if valid then will add it to the custom ip database table.
-     */
     private fun showAddIpDialog() {
         val dBind = DialogAddCustomIpBinding.inflate(layoutInflater)
         val builder = MaterialAlertDialogBuilder(requireContext(), R.style.App_Dialog_NoDim).setView(dBind.root)
@@ -258,7 +240,7 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         val dialog = builder.create()
         dialog.show()
         lp.copyFrom(dialog.window?.attributes)
-        lp.width = WindowManager.LayoutParams.WRAP_CONTENT
+        lp.width = WindowManager.LayoutParams.MATCH_PARENT
         lp.height = WindowManager.LayoutParams.WRAP_CONTENT
 
         dialog.setCancelable(true)
@@ -280,6 +262,7 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
 
         dBind.daciBlockBtn.setOnClickListener {
             handleInsertIp(dBind, IpRulesManager.IpRuleStatus.BLOCK)
+            dialog.dismiss()
         }
 
         dBind.daciTrustBtn.setOnClickListener {
@@ -288,28 +271,56 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
             } else {
                 handleInsertIp(dBind, IpRulesManager.IpRuleStatus.TRUST)
             }
+            dialog.dismiss()
         }
         Utilities.adjustButtonLayoutOrientation(dBind.dialogButtonsContainer)
         dBind.daciCancelBtn.setOnClickListener { dialog.dismiss() }
         dialog.show()
     }
 
-
     private fun handleInsertIp(
         dBind: DialogAddCustomIpBinding,
         status: IpRulesManager.IpRuleStatus
     ) {
         ui {
-            val input = dBind.daciIpEditText.text.toString()
+            val input = dBind.daciIpEditText.text.toString().trim()
             val ipString = Utilities.removeLeadingAndTrailingDots(input)
-            var ip: IPAddress? = null
-            var port = 0
+            
+            // Read selected Protocol
+            val selectedProtocol = when (dBind.daciProtocolGroup.checkedRadioButtonId) {
+                R.id.daci_proto_tcp -> "TCP"
+                R.id.daci_proto_udp -> "UDP"
+                else -> "ALL"
+            }
 
-            // chances of creating NetworkOnMainThread exception, handling with io operation
+            // Read Connection Concurrency Limit
+            val connLimit = dBind.daciConnLimitEditText.text.toString().trim().toIntOrNull() ?: 0
+
+            var ip: IPAddress? = null
+            var fromPort = 0
+            var toPort = 0
+
             ioCtx {
-                val ipPair = IpRulesManager.getIpNetPort(ipString)
-                ip = ipPair.first
-                port = ipPair.second
+                // Parse IP and Port/Port-Range
+                if (ipString.contains(":")) {
+                    val parts = ipString.split(":")
+                    val ipPart = parts[0].replace("[", "").replace("]", "").trim()
+                    val portPart = parts.getOrNull(1)?.trim().orEmpty()
+
+                    val ipPair = IpRulesManager.getIpNetPort(ipPart)
+                    ip = ipPair.first
+
+                    val range = IPUtil.parsePortOrRange(portPart)
+                    if (range != null) {
+                        fromPort = range.fromPort
+                        toPort = range.toPort
+                    }
+                } else {
+                    val ipPair = IpRulesManager.getIpNetPort(ipString)
+                    ip = ipPair.first
+                    fromPort = ipPair.second
+                    toPort = ipPair.second
+                }
             }
 
             if (ip == null || ipString.isEmpty()) {
@@ -318,8 +329,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
                 return@ui
             }
 
-            // reject non-CIDR-able input such as "1.1.1.1-55"; the ip trie only
-            // accepts CIDR notation and would reject the rule (see isCidrEnforceable)
             if (!IpRulesManager.isCidrEnforceable(ip)) {
                 dBind.daciFailureTextView.text = getString(R.string.ci_dialog_error_invalid_cidr)
                 dBind.daciFailureTextView.visibility = View.VISIBLE
@@ -327,20 +336,39 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
             }
 
             dBind.daciIpEditText.text.clear()
-            insertCustomIp(ip, port, status)
+            insertCustomIp(ip, fromPort, toPort, selectedProtocol, connLimit, status)
         }
     }
 
-    private fun insertCustomIp(ip: IPAddress?, port: Int?, status: IpRulesManager.IpRuleStatus) {
+    private fun insertCustomIp(
+        ip: IPAddress?,
+        fromPort: Int,
+        toPort: Int,
+        protocol: String,
+        connLimit: Int,
+        status: IpRulesManager.IpRuleStatus
+    ) {
         if (ip == null) return
 
-        io { IpRulesManager.addIpRule(uid, ip, port, status, proxyId = "", proxyCC = "") }
+        io {
+            IpRulesManager.addIpRuleWithRange(
+                uid = uid,
+                ip = ip,
+                fromPort = fromPort,
+                toPort = toPort,
+                protocol = protocol,
+                connLimit = connLimit,
+                status = status,
+                proxyId = "",
+                proxyCC = ""
+            )
+        }
         Utilities.showToastUiCentered(
             requireContext(),
             getString(R.string.ci_dialog_added_success),
             Toast.LENGTH_SHORT
         )
-        logEvent("Added IP rule: $ip, Port: $port, Status: $status, UID: $uid")
+        logEvent("Added Custom IP Rule: $ip, Range: $fromPort-$toPort, Proto: $protocol, Limit: $connLimit, Status: $status, UID: $uid")
     }
 
     private fun showIpRulesDeleteDialog() {
@@ -379,16 +407,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         builder.create().show()
     }
 
-    // -----------------------------------------------------------------------------------------
-    // DEBUG-only import helpers
-    // The methods below are only called when DEBUG == true. They are intentionally grouped
-    // together at the bottom of the class to make the debug boundary visually clear.
-    // -----------------------------------------------------------------------------------------
-
-    /**
-     * Called after the user picks a file in the document picker.
-     * Parses the file on an IO coroutine, then shows the confirmation dialog on the main thread.
-     */
     private fun handleImportUri(uri: Uri) {
         io {
             val parsed = RulesImportHelper.parseFile(
@@ -416,12 +434,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         }
     }
 
-    /**
-     * Shows the import confirmation dialog.
-     * Displays file name, valid entry count, ignored count, and Block / Allow radio group.
-     * The "Allow" label mirrors the manual add dialog: "Bypass Universal" for global rules,
-     * "Trust" for app-specific rules.
-     */
     private fun showImportConfirmDialog(parsed: RulesImportHelper.ParsedFile) {
         val dBind = DialogImportConfirmBinding.inflate(layoutInflater)
         val dialog = MaterialAlertDialogBuilder(requireContext(), R.style.App_Dialog_NoDim)
@@ -435,14 +447,12 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         lp.height = WindowManager.LayoutParams.WRAP_CONTENT
         dialog.setCancelable(true)
         dialog.window?.attributes = lp
-        // keep the dialog within the app's max width on expanded windows (foldables/tablets)
         UIUtils.capDialogWidth(dialog)
 
         dBind.dicFileName.text = parsed.fileName
         dBind.dicValidCount.text = parsed.valid.size.toString()
         dBind.dicIgnoredCount.text = parsed.invalidCount.toString()
 
-        // Mirror the manual add dialog: global rules use BYPASS_UNIVERSAL, app rules use TRUST
         dBind.dicAllowRadio.text =
             if (uid == UID_EVERYBODY) getString(R.string.bypass_universal)
             else getString(R.string.ci_trust_rule)
@@ -454,7 +464,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
             val ipStatus = if (isBlock) {
                 IpRulesManager.IpRuleStatus.BLOCK
             } else {
-                // Match the same trust semantics as manual rule creation
                 if (uid == UID_EVERYBODY) IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL
                 else IpRulesManager.IpRuleStatus.TRUST
             }
@@ -463,10 +472,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         }
     }
 
-    /**
-     * Runs the actual insertion on an IO coroutine, then shows the summary dialog.
-     * The RecyclerView refreshes automatically via LiveData once insertion is complete.
-     */
     private fun runImport(entries: List<String>, ipStatus: IpRulesManager.IpRuleStatus) {
         io {
             val summary = RulesImportHelper.importRules(
@@ -479,7 +484,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         }
     }
 
-    /** Shows a simple summary dialog after all rules have been inserted. */
     private fun showImportSummaryDialog(summary: RulesImportHelper.ImportSummary) {
         val msg = getString(
             R.string.import_rules_summary,
