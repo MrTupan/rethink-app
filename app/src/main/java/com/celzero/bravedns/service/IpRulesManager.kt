@@ -31,7 +31,6 @@ import com.google.common.cache.CacheBuilder
 import inet.ipaddr.IPAddress
 import inet.ipaddr.IPAddressString
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 
@@ -46,8 +45,11 @@ object IpRulesManager : KoinComponent {
     // future, ensure both cases continue to be handled correctly.
     private val iptree by lazy { Backend.newIpTree() }
 
-    // Active connection concurrency tracker per rule (UID + Protocol)
-    private val activeConnsMap = ConcurrentHashMap<String, AtomicInteger>()
+    // Session auto-idle timeout: 4 seconds of silence means the previous match has ended
+    private const val SESSION_IDLE_TIMEOUT_MS = 4000L
+
+    // Dynamic session map: key = "$uid:$protocol", value = Map<"IP:Port", lastActivityTimestamp>
+    private val activeSessionsMap = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
 
     // key-value object for ip look-up
     data class CacheKey(val ipNetPort: String, val uid: Int, val protocol: String)
@@ -107,43 +109,57 @@ object IpRulesManager : KoinComponent {
         Logger.v(LOG_TAG_FIREWALL, msg)
     }
 
-    fun acquireConnection(uid: Int, protocol: String, limit: Int): Boolean {
+    /**
+     * Smart stateful session gatekeeper:
+     * - Refreshes timestamp if packet belongs to current ongoing match.
+     * - Automatically expires old match sessions after 4 seconds of silence.
+     * - Allows new match IP to take over smoothly.
+     * - Blocks any simultaneous second IP attempting to leak data.
+     */
+    private fun checkAndAcquireSession(uid: Int, protocol: String, destIpPort: String, limit: Int): Boolean {
         if (limit <= 0) return true
         val key = "$uid$KV_SEP${protocol.uppercase()}"
-        val counter = activeConnsMap.computeIfAbsent(key) { AtomicInteger(0) }
-        while (true) {
-            val current = counter.get()
-            if (current >= limit) {
-                Logger.i(LOG_TAG_FIREWALL, "Connection limit reached for $key ($current >= $limit). Rejecting connection.")
-                return false
+        val now = System.currentTimeMillis()
+        val sessions = activeSessionsMap.computeIfAbsent(key) { ConcurrentHashMap() }
+
+        synchronized(sessions) {
+            // 1. Clean up any expired/dead match sessions
+            val iterator = sessions.entries.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (now - entry.value > SESSION_IDLE_TIMEOUT_MS) {
+                    Logger.i(LOG_TAG_FIREWALL, "Expired old match session: ${entry.key} for $key")
+                    iterator.remove()
+                }
             }
-            if (counter.compareAndSet(current, current + 1)) {
-                Logger.d(LOG_TAG_FIREWALL, "Acquired conn for $key. Active: ${current + 1}/$limit")
+
+            // 2. If packet is going to the current active match, keep it alive
+            if (sessions.containsKey(destIpPort)) {
+                sessions[destIpPort] = now
                 return true
             }
-        }
-    }
 
-    fun releaseConnection(uid: Int, protocol: String) {
-        val key = "$uid$KV_SEP${protocol.uppercase()}"
-        activeConnsMap[key]?.let {
-            val count = it.decrementAndGet()
-            if (count < 0) it.set(0)
-            Logger.d(LOG_TAG_FIREWALL, "Released conn for $key. Active: $count")
+            // 3. If it's a new match server, check if slot is available
+            if (sessions.size < limit) {
+                sessions[destIpPort] = now
+                Logger.d(LOG_TAG_FIREWALL, "New session granted for $destIpPort ($key). Active: ${sessions.size}/$limit")
+                return true
+            }
+
+            // 4. Over limit -> Drop unauthorized simultaneous connection
+            Logger.i(LOG_TAG_FIREWALL, "Concurrency limit reached for $key (${sessions.size} >= $limit). Blocked: $destIpPort")
+            return false
         }
     }
 
     suspend fun load(): Long {
         try {
             iptree.clear()
-            activeConnsMap.clear()
+            activeSessionsMap.clear()
         } catch (e: Exception) {
             Logger.e(LOG_TAG_FIREWALL, "err iptree.clear()", e)
         }
         db.getIpRules().forEach {
-            // adding as part of defensive programming, even adding these rules to cache will
-            // not cause any issues, but to avoid unnecessary entries in the trie, skipping these
-            // entries
             if (it.uid < 0 && it.uid != Constants.UID_EVERYBODY) {
                 Logger.i(LOG_TAG_FIREWALL, "skipping ip rule for uid: ${it.uid}")
                 return@forEach
@@ -199,10 +215,6 @@ object IpRulesManager : KoinComponent {
         return treeKey(ipaddr.toNormalizedString())
     }
 
-    /**
-     * Never throws: returns the CIDR key for the trie, or null when the input
-     * cannot be enforced by the CIDR-only ip trie.
-     */
     private fun treeKey(ipstr: String?): String? {
         if (ipstr == null) return null
         return try {
@@ -284,7 +296,6 @@ object IpRulesManager : KoinComponent {
     }
 
     private suspend fun updateRule(ci: CustomIp) {
-        // ensure modified time is updated for ordering
         ci.modifiedDateTime = System.currentTimeMillis()
         db.update(ci)
         val ipaddr = normalize(ci.getCustomIpAddress()?.first)
@@ -343,16 +354,15 @@ object IpRulesManager : KoinComponent {
             return it
         }
 
-        // 1. Check Specific IP with Protocol
+        // 1. Direct Specific IP Check with Protocol
         getMostSpecificRuleMatch(uid, ipstr, port, protocol).let {
-            logv("ip rule for $uid $ipstr $port => ${it.name}")
             if (it != IpRuleStatus.NONE) {
                 resultsCache.put(ck, it)
                 return it
             }
         }
 
-        // 2. Check 0.0.0.0/0 Wildcard Range for this App
+        // 2. Wildcard IPv4 (0.0.0.0/0) Check for this app (Evaluates 10000-65535 range!)
         getMostSpecificRuleMatch(uid, "0.0.0.0/0", port, protocol).let {
             if (it != IpRuleStatus.NONE) {
                 resultsCache.put(ck, it)
@@ -360,16 +370,22 @@ object IpRulesManager : KoinComponent {
             }
         }
 
-        // 3. Check Universal Rules (UID_EVERYBODY)
-        getMostSpecificRuleMatch(Constants.UID_EVERYBODY, "0.0.0.0/0", port, protocol).let {
+        // 3. Wildcard IPv6 (::/0) Check for this app
+        getMostSpecificRuleMatch(uid, "::/0", port, protocol).let {
             if (it != IpRuleStatus.NONE) {
                 resultsCache.put(ck, it)
                 return it
             }
         }
 
-        // 4. Route matches fallback
-        getMostSpecificRouteMatch(uid, ipstr, port, protocol).let {
+        // 4. Global Universal Rules (UID_EVERYBODY)
+        getMostSpecificRuleMatch(Constants.UID_EVERYBODY, ipstr, port, protocol).let {
+            if (it != IpRuleStatus.NONE) {
+                resultsCache.put(ck, it)
+                return it
+            }
+        }
+        getMostSpecificRuleMatch(Constants.UID_EVERYBODY, "0.0.0.0/0", port, protocol).let {
             if (it != IpRuleStatus.NONE) {
                 resultsCache.put(ck, it)
                 return it
@@ -386,31 +402,15 @@ object IpRulesManager : KoinComponent {
 
     fun hasProxy(uid: Int, ipstr: String, port: Int): Pair<String, String> {
         getMostSpecificMatchProxies(uid, ipstr, port).let {
-            logv("proxy for $uid $ipstr $port => ${it.first}, ${it.second}")
             if (it.first.isNotEmpty() && it.second.isNotEmpty()) {
                 return it
             }
         }
         getMostSpecificMatchProxies(uid, ipstr).let {
-            logv("proxy for $uid $ipstr => ${it.first}, ${it.second}")
             if (it.first.isNotEmpty() && it.second.isNotEmpty()) {
                 return it
             }
         }
-        getMostSpecificRouteProxies(uid, ipstr, port).let {
-            logv("route rule for $uid $ipstr $port => ${it.first}, ${it.second}")
-            if (it.first.isNotEmpty() && it.second.isNotEmpty()) {
-                return it
-            }
-        }
-        getMostSpecificRouteProxies(uid, ipstr).let {
-            logv("route rule for $uid $ipstr => ${it.first}, ${it.second}")
-            if (it.first.isNotEmpty() && it.second.isNotEmpty()) {
-                return it
-            }
-        }
-
-        Logger.i(LOG_TAG_FIREWALL, "hasProxy? NO $uid, $ipstr, $port")
         return Pair("", "")
     }
 
@@ -444,10 +444,10 @@ object IpRulesManager : KoinComponent {
     fun getMostSpecificRuleMatch(uid: Int, ipstr: String, port: Int = 0, protocol: String = "ALL"): IpRuleStatus {
         val k = treeKey(ipstr)
         if (!k.isNullOrEmpty()) {
-            val status = checkTreeForPortAndProto(k, treeValLike(uid), uid, port, protocol)
+            val status = checkTreeForPortAndProto(k, treeValLike(uid), uid, ipstr, port, protocol)
             if (status != IpRuleStatus.NONE) return status
 
-            val globalStatus = checkTreeForPortAndProto(k, treeValLike(Constants.UID_EVERYBODY), Constants.UID_EVERYBODY, port, protocol)
+            val globalStatus = checkTreeForPortAndProto(k, treeValLike(Constants.UID_EVERYBODY), Constants.UID_EVERYBODY, ipstr, port, protocol)
             if (globalStatus != IpRuleStatus.NONE) return globalStatus
         }
         return IpRuleStatus.NONE
@@ -456,7 +456,7 @@ object IpRulesManager : KoinComponent {
     // Overload for backward compatibility
     fun getMostSpecificRuleMatch(uid: Int, ipstr: String, port: Int = 0): IpRuleStatus = getMostSpecificRuleMatch(uid, ipstr, port, "ALL")
 
-    private fun checkTreeForPortAndProto(k: String, vlike: String, targetUid: Int, port: Int, protocol: String): IpRuleStatus {
+    private fun checkTreeForPortAndProto(k: String, vlike: String, targetUid: Int, ipstr: String, port: Int, protocol: String): IpRuleStatus {
         val x = try {
             iptree.getLike(k, vlike) ?: iptree.valuesLike(k, vlike)
         } catch (e: Exception) {
@@ -484,9 +484,10 @@ object IpRulesManager : KoinComponent {
             }
 
             if ((treeVal.uid == targetUid || treeVal.uid == Constants.UID_EVERYBODY) && portMatches && treeVal.status != IpRuleStatus.NONE) {
-                // 3. Concurrency Limit Check
+                // 3. Stateful Concurrency Check with Auto-Expiry
                 if (treeVal.status == IpRuleStatus.TRUST || treeVal.status == IpRuleStatus.BYPASS_UNIVERSAL) {
-                    if (treeVal.connLimit > 0 && !acquireConnection(targetUid, protocol, treeVal.connLimit)) {
+                    val destKey = "$ipstr:$port"
+                    if (treeVal.connLimit > 0 && !checkAndAcquireSession(targetUid, protocol, destKey, treeVal.connLimit)) {
                         return IpRuleStatus.BLOCK
                     }
                 }
@@ -543,17 +544,11 @@ object IpRulesManager : KoinComponent {
                 Logger.e(LOG_TAG_FIREWALL, "err iptree.getLike($k, $vlike) for uid: $uid", e)
                 return Pair("", "")
             }
-            if (DEBUG) logv("getMostSpecificRuleMatch: $uid, $k, $vlike => $x")
             val treeVals = x?.split(Backend.Vsep) ?: return Pair("", "")
 
             treeVals.reversed().forEach {
-                val treeVal = convertStringToTreeVal(it)
-                if (treeVal == null) {
-                    logv("getMostSpecificMatchProxies: $uid, $k, $vlike => no match for $it")
-                    return Pair("", "")
-                }
+                val treeVal = convertStringToTreeVal(it) ?: return@forEach
                 if (treeVal.uid == uid && treeVal.port == port) {
-                    logv("getMostSpecificMatchProxies: $uid, $k, $vlike => found match for $it")
                     return Pair(treeVal.proxyId, treeVal.proxyCC)
                 }
             }
@@ -566,30 +561,7 @@ object IpRulesManager : KoinComponent {
     }
 
     private fun getMostSpecificRouteProxies(uid: Int, ipstr: String, port: Int = 0): Pair<String, String> {
-        val k = treeKey(ipstr)
-        if (!k.isNullOrEmpty()) {
-            val vlike = treeValLike(uid, port)
-            val x = try {
-                iptree.valuesLike(k, vlike)
-            } catch (e: Exception) {
-                Logger.e(LOG_TAG_FIREWALL, "err iptree.valuesLike($k, $vlike) for uid: $uid", e)
-                return Pair("", "")
-            }
-            logv("getMostSpecificRouteMatch: $uid, $k, $vlike => $x")
-            val treeVals = x?.split(Backend.Vsep) ?: return Pair("", "")
-            treeVals.reversed().forEach {
-                val treeVal = convertStringToTreeVal(it)
-                if (treeVal == null) {
-                    logv("getMostSpecificRouteProxies: $uid, $k, $vlike => no match for $it")
-                    return Pair("", "")
-                }
-                if (treeVal.uid == uid && treeVal.port == port) {
-                    logv("getMostSpecificRouteProxies: $uid, $k, $vlike => $it")
-                    return Pair(treeVal.proxyId, treeVal.proxyCC)
-                }
-            }
-        }
-        return Pair("", "")
+        return getMostSpecificMatchProxies(uid, ipstr, port)
     }
 
     suspend fun deleteRulesByUid(uid: Int) {
@@ -1013,9 +985,6 @@ object IpRulesManager : KoinComponent {
                     isAnyTrusted = true
                 }
             }
-            if (!isAnyTrusted) Logger.vv(LOG_TAG_FIREWALL, "isPortRuleSetForIp: $ip, $uid => false")
-            else Logger.i(LOG_TAG_FIREWALL, "isPortRuleSetForIp: $ip, $uid => true")
-
             return isAnyTrusted
         }
     }
