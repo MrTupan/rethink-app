@@ -27,7 +27,6 @@
         android:textSize="@dimen/small_font_subheading_text"
         app:layout_constraintTop_toBottomOf="@id/daci_ip_title" />
 
-
     <com.google.android.material.textfield.TextInputLayout
         android:id="@+id/daci_text_input_layout"
         style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
@@ -35,8 +34,8 @@
         android:layout_height="wrap_content"
         android:layout_marginStart="20dp"
         android:layout_marginEnd="20dp"
-        android:layout_marginBottom="10dp"
-        android:hint="@string/ci_dialog_edittext_hint"
+        android:layout_marginBottom="5dp"
+        android:hint="IP, Subnet or Range (e.g. 0.0.0.0/0:10000-65535)"
         app:boxCornerRadiusBottomEnd="8dp"
         app:boxCornerRadiusBottomStart="8dp"
         app:boxCornerRadiusTopEnd="8dp"
@@ -46,16 +45,82 @@
 
         <EditText
             android:id="@+id/daci_ip_edit_text"
-            android:layout_width="fill_parent"
+            android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:hint="@string/ci_dialog_edittext_hint"
+            android:hint="[0.0.0.0/0]:10000-65535"
             android:importantForAutofill="no"
             android:inputType="textUri"
             android:maxLines="2"
             android:minHeight="48dp"
             android:textColor="?attr/primaryTextColor"
-            android:textSize="@dimen/large_font_text_view"
-            app:layout_constraintRight_toLeftOf="parent" />
+            android:textSize="@dimen/large_font_text_view" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Network Protocol Selection (ALL, TCP, UDP) -->
+    <RadioGroup
+        android:id="@+id/daci_protocol_group"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:layout_marginTop="5dp"
+        android:orientation="horizontal"
+        app:layout_constraintTop_toBottomOf="@id/daci_text_input_layout">
+
+        <RadioButton
+            android:id="@+id/daci_proto_all"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:checked="true"
+            android:text="ALL"
+            android:textColor="?attr/primaryTextColor" />
+
+        <RadioButton
+            android:id="@+id/daci_proto_tcp"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="TCP"
+            android:textColor="?attr/primaryTextColor" />
+
+        <RadioButton
+            android:id="@+id/daci_proto_udp"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="UDP"
+            android:textColor="?attr/primaryTextColor" />
+    </RadioGroup>
+
+    <!-- Active Connection Concurrency Limit Input -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/daci_conn_limit_layout"
+        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="20dp"
+        android:layout_marginEnd="20dp"
+        android:layout_marginTop="5dp"
+        android:hint="Active Connection Limit (e.g. 1 or 0 for default)"
+        app:boxCornerRadiusBottomEnd="8dp"
+        app:boxCornerRadiusBottomStart="8dp"
+        app:boxCornerRadiusTopEnd="8dp"
+        app:boxCornerRadiusTopStart="8dp"
+        app:hintTextColor="?attr/accentGood"
+        app:layout_constraintTop_toBottomOf="@id/daci_protocol_group">
+
+        <EditText
+            android:id="@+id/daci_conn_limit_edit_text"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:hint="1"
+            android:importantForAutofill="no"
+            android:inputType="number"
+            android:maxLines="1"
+            android:minHeight="48dp"
+            android:textColor="?attr/primaryTextColor"
+            android:textSize="@dimen/large_font_text_view" />
     </com.google.android.material.textfield.TextInputLayout>
 
     <androidx.appcompat.widget.AppCompatTextView
@@ -69,7 +134,7 @@
         android:textColor="?attr/colorError"
         android:textSize="@dimen/default_font_text_view"
         android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/daci_text_input_layout" />
+        app:layout_constraintTop_toBottomOf="@id/daci_conn_limit_layout" />
 
     <LinearLayout
         android:id="@+id/dialog_buttons_container"
