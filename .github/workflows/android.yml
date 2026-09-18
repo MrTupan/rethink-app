@@ -49,8 +49,8 @@ jobs:
       if: always()
       run: |
         mkdir -p dist
-        find app/build/outputs/apk/ -name "*.apk" -exec cp {} dist/ \; 2>/dev/null || true
-        echo "Collected APKs:"
+        find app/build/outputs/apk/ -name "*arm64*.apk" -exec cp {} dist/ \; 2>/dev/null || true
+        echo "Collected Single ARM64 APK:"
         ls -la dist/
 
     - name: 🚀 Upload Installable APK
