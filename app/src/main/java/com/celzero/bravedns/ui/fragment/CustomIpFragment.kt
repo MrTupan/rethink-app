@@ -285,15 +285,13 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         ui {
             val input = dBind.daciIpEditText.text.toString().trim()
             val ipString = Utilities.removeLeadingAndTrailingDots(input)
-            
-            // Read selected Protocol
+
             val selectedProtocol = when (dBind.daciProtocolGroup.checkedRadioButtonId) {
                 R.id.daci_proto_tcp -> "TCP"
                 R.id.daci_proto_udp -> "UDP"
                 else -> "ALL"
             }
 
-            // Read Connection Concurrency Limit
             val connLimit = dBind.daciConnLimitEditText.text.toString().trim().toIntOrNull() ?: 0
 
             var ip: IPAddress? = null
@@ -301,7 +299,6 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
             var toPort = 0
 
             ioCtx {
-                // Parse IP and Port/Port-Range
                 if (ipString.contains(":")) {
                     val parts = ipString.split(":")
                     val ipPart = parts[0].replace("[", "").replace("]", "").trim()
@@ -353,7 +350,7 @@ class CustomIpFragment : Fragment(R.layout.fragment_custom_ip), SearchView.OnQue
         io {
             IpRulesManager.addIpRuleWithRange(
                 uid = uid,
-                ip = ip,
+                ipstr = ip,
                 fromPort = fromPort,
                 toPort = toPort,
                 protocol = protocol,
