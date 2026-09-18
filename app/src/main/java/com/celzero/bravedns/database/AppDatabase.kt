@@ -58,7 +58,7 @@ import com.celzero.bravedns.util.Constants
         SponsorEntity::class,
         SmartDnsEndpoint::class
     ],
-    version = 35,
+    version = 36,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -66,32 +66,11 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "bravedns.db"
-        // Pre-packaged asset at the current schema version (31). Because the asset's
-        // user_version matches @Database.version and its room_master_table identity_hash
-        // matches the hash Room 2.8.1 computes for v31, Room opens it with NO migration
-        // and NO schema validation at first launch. This avoids the 22->31 migration path
-        // running on the freshly-copied asset, which was a source of the
-        // "Bad database header" failure seen after clearing app storage.
         private const val DATABASE_PATH = "database/rethink_v31.db"
         private const val PRAGMA = "pragma wal_checkpoint(full)"
-        // cap the WAL file size (32MB). Without this, the -wal file stays at its
-        // high-water mark forever: SQLite reuses WAL space after a checkpoint but
-        // never shrinks the file, so a single large transaction (e.g. a bulk log
-        // purge) can leave a multi-hundred-MB -wal on disk for the lifetime of the
-        // installation.
         private const val JOURNAL_SIZE_LIMIT_BYTES = 32 * 1024 * 1024
         private const val APP_NOTES_MAX_LENGTH = 500
 
-        // setJournalMode() is added as part of issue #344
-        // modified the journal mode from TRUNCATE to AUTOMATIC.
-        // The actual value will be TRUNCATE if it is a low-RAM device.
-        // Otherwise, WRITE_AHEAD_LOGGING will be used.
-        // Ref:
-        // https://developer.android.com/reference/android/arch/persistence/room/RoomDatabase.JournalMode#automatic
-        // A valid SQLite database file is at least 100 bytes (the header page) and begins
-        // with the 16-byte magic string "SQLite format 3\0". Files failing this check are
-        // treated as corrupt/truncated so the pre-packaged asset can be re-copied by Room's
-        // createFromAsset() instead of being reused as-is.
         internal fun isValidSQLiteFile(file: java.io.File): Boolean {
             if (file.length() < 100) return false
             return try {
@@ -107,13 +86,6 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun buildDatabase(context: Context): AppDatabase {
             val appContext = context.applicationContext
-            // Self-heal: if a corrupt/truncated bravedns.db is present on disk (e.g. a
-            // 0-byte file left behind by a premature ATTACH in LogDatabase.populateDatabase
-            // after the user clears app storage via Android settings), delete it so that
-            // Room's createFromAsset() re-copies the pre-packaged asset and the seed data
-            // (default DoH/DNSCrypt/RDNS/DoT/ODoH rows) is restored. Without this, Room sees
-            // that the file already exists and skips the asset copy, failing with:
-            //   "Bad database header, unable to read 4 bytes at offset 60" (user_version).
             val dbFile = appContext.getDatabasePath(DATABASE_NAME)
             if (dbFile.exists() && !isValidSQLiteFile(dbFile)) {
                 Logger.i(
@@ -121,7 +93,6 @@ abstract class AppDatabase : RoomDatabase() {
                     "Corrupt DB file detected (${dbFile.length()} bytes); deleting to allow asset re-copy"
                 )
                 dbFile.delete()
-                // remove sidecar files so a stale wal/shm cannot resurrect broken state
                 appContext.getDatabasePath("$DATABASE_NAME-wal").delete()
                 appContext.getDatabasePath("$DATABASE_NAME-shm").delete()
             }
@@ -145,6 +116,7 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 DATABASE_NAME
             )
+                .fallbackToDestructiveMigration()
                 .createFromAsset(DATABASE_PATH)
                 .addCallback(roomCallback)
                 .setJournalMode(JournalMode.AUTOMATIC)
@@ -182,6 +154,7 @@ abstract class AppDatabase : RoomDatabase() {
                 .addMigrations(MIGRATION_32_33)
                 .addMigrations(MIGRATION_33_34)
                 .addMigrations(MIGRATION_34_35)
+                .addMigrations(MIGRATION_35_36)
                 .build()
 
         private val roomCallback: Callback =
@@ -203,20 +176,16 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // PRAGMA journal_size_limit sets *and* returns the new limit, i.e. it is a
-        // result-returning pragma; SQLiteDatabase.execSQL() rejects such statements
-        // ("Queries can be performed using SQLiteDatabase query or rawQuery methods
-        // only"), so it must run through the query path with the cursor drained.
         private fun setJournalSizeLimit(db: SupportSQLiteDatabase) {
             try {
                 db.query(
                     SimpleSQLiteQuery("PRAGMA journal_size_limit = $JOURNAL_SIZE_LIMIT_BYTES")
                 ).use { it.moveToFirst() }
             } catch (e: Exception) {
-                // non-fatal: without the limit the WAL simply keeps its high-water mark
                 Logger.w(LOG_TAG_APP_DB, "err setting journal_size_limit: ${e.message}", e)
             }
         }
+
         private fun createAppInfoNotesLengthTriggers(db: SupportSQLiteDatabase) {
             db.execSQL(
                 "CREATE TRIGGER IF NOT EXISTS trg_appinfo_notes_length_insert " +
@@ -307,7 +276,6 @@ abstract class AppDatabase : RoomDatabase() {
                     db.execSQL(
                         "CREATE TABLE 'ProxyEndpoint' ( 'id' INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, 'proxyName' TEXT NOT NULL,'proxyMode' INTEGER NOT NULL, 'proxyType' TEXT NOT NULL,'proxyAppName' TEXT , 'proxyIP' TEXT, 'userName' TEXT , 'password' TEXT, 'proxyPort' INTEGER NOT NULL, 'isSelected' INTEGER NOT NULL, 'isCustom' INTEGER NOT NULL , 'isUDP' INTEGER NOT NULL,'modifiedDataTime' INTEGER NOT NULL, 'latency' INTEGER NOT NULL) "
                     )
-                    // Perform insert of endpoints
                     db.execSQL(
                         "INSERT OR REPLACE INTO DoHEndpoint(id,dohName,dohURL,dohExplanation, isSelected,isCustom,modifiedDataTime,latency) values(1,'Cloudflare','https://cloudflare-dns.com/dns-query','Does not block any DNS requests. Uses Cloudflare''s 1.1.1.1 DNS endpoint.',0,0,0,0)"
                     )
@@ -379,7 +347,6 @@ abstract class AppDatabase : RoomDatabase() {
                     db.execSQL(
                         "CREATE TABLE 'DNSLogs' ('id' INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, 'queryStr' TEXT NOT NULL, 'time' INTEGER NOT NULL, 'flag' TEXT NOT NULL, 'resolver' TEXT NOT NULL, 'latency' INTEGER NOT NULL, 'typeName' TEXT NOT NULL, 'isBlocked' INTEGER NOT NULL, 'blockLists' LONGTEXT NOT NULL,  'serverIP' TEXT NOT NULL, 'relayIP' TEXT NOT NULL, 'responseTime' INTEGER NOT NULL, 'response' TEXT NOT NULL, 'status' TEXT NOT NULL,'dnsType' INTEGER NOT NULL) "
                     )
-                    // https://basic.bravedns.com/1:YBIgACABAHAgAA== - New block list configured
                     db.execSQL(
                         "UPDATE DoHEndpoint set dohURL  = 'https://basic.bravedns.com/1:YBcgAIAQIAAIAABgIAA=' where id = 4"
                     )
@@ -422,12 +389,6 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        /**
-         * For the version 053-1. Created a view for the AppInfo table so that the read will be
-         * minimized. Also deleting the uid=0 row from AppInfo table. In earlier version the UID=0
-         * is added as default and not used. Now the UID=0(ANDROID) is added to the non-app
-         * category.
-         */
         internal val MIGRATION_7_8: Migration =
             object : Migration(7, 8) {
                 override fun migrate(db: SupportSQLiteDatabase) {
@@ -501,7 +462,6 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
-                // add more doh options as default
                 private fun addMoreDohToList(db: SupportSQLiteDatabase) {
                     with(db) {
                         execSQL(
@@ -519,7 +479,6 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
-                // rename blockedConnections table to CustomIp
                 private fun modifyBlockedConnectionsTable(db: SupportSQLiteDatabase) {
                     with(db) {
                         execSQL(
@@ -562,9 +521,6 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
-                // introduce NOT NULL property for columns in the schema, alter table query cannot
-                // add the not-null to the schema, so creating a backup and recreating the table
-                // during migration.
                 private fun modifyConnectionTrackerTable(db: SupportSQLiteDatabase) {
                     with(db) {
                         execSQL(
@@ -584,8 +540,6 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
-                // create new table to store Rethink dns endpoint
-                // contains both the global and app specific dns endpoints
                 private fun createRethinkDnsTable(db: SupportSQLiteDatabase) {
                     with(db) {
                         execSQL(
@@ -626,7 +580,6 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
-                // remove the rethink doh from the list
                 private fun removeRethinkFromDohList(db: SupportSQLiteDatabase) {
                     with(db) { execSQL("DELETE from DoHEndpoint where id in (4,5)") }
                 }
@@ -655,11 +608,9 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // migration part of v053k
         internal val MIGRATION_13_14: Migration =
             object : Migration(13, 14) {
                 override fun migrate(db: SupportSQLiteDatabase) {
-                    // modify the default blocklist to OISD
                     db.execSQL(
                         "UPDATE RethinkDnsEndpoint set url  = 'https://basic.rethinkdns.com/1:IAAgAA==' where name = 'RDNS Default' and isCustom = 0"
                     )
@@ -670,7 +621,6 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // migration part of v053l
         internal val MIGRATION_14_15: Migration =
             object : Migration(14, 15) {
                 override fun migrate(db: SupportSQLiteDatabase) {
@@ -685,7 +635,6 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // migration part of v053m
         internal val MIGRATION_15_16: Migration =
             object : Migration(15, 16) {
                 override fun migrate(db: SupportSQLiteDatabase) {
@@ -723,7 +672,6 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // migration part of v054
         internal val MIGRATION_16_17: Migration =
             object : Migration(16, 17) {
                 override fun migrate(db: SupportSQLiteDatabase) {
@@ -850,7 +798,6 @@ abstract class AppDatabase : RoomDatabase() {
                         execSQL(
                             "ALTER TABLE AppInfo add column uploadBytes INTEGER DEFAULT 0 NOT NULL"
                         )
-                        // doh
                         execSQL(
                             "UPDATE DoHEndpoint set dohExplanation = 'R.string.cloudflare_dns_desc' where dohName = 'Cloudflare'"
                         )
@@ -872,7 +819,6 @@ abstract class AppDatabase : RoomDatabase() {
                         execSQL(
                             "UPDATE DoHEndpoint set dohExplanation = 'R.string.quad9_dns_desc' where dohName = 'Quad9 Secure'"
                         )
-                        // dns crypt
                         execSQL(
                             "UPDATE DNSCryptEndpoint set dnsCryptExplanation = 'R.string.crypt_cleanbrowsing_family_desc' where dnsCryptName = 'Cleanbrowsing Family'"
                         )
@@ -888,7 +834,6 @@ abstract class AppDatabase : RoomDatabase() {
                         execSQL(
                             "UPDATE DNSCryptEndpoint set dnsCryptExplanation = 'R.string.crypt_quad9_desc' where dnsCryptName = 'Quad9'"
                         )
-                        // dns crypt relay
                         execSQL(
                             "UPDATE DNSCryptRelayEndpoint set dnsCryptRelayExplanation = 'R.string.crypt_relay_netherlands' where dnsCryptRelayName = 'Netherlands'"
                         )
@@ -917,11 +862,9 @@ abstract class AppDatabase : RoomDatabase() {
         internal val MIGRATION_19_20: Migration =
             object : Migration(19, 20) {
                 override fun migrate(db: SupportSQLiteDatabase) {
-                    // quad9
                     db.execSQL(
                         "UPDATE DnsCryptEndpoint set dnsCryptURL = 'sdns://AQYAAAAAAAAADTkuOS45LjEyOjg0NDMgZ8hHuMh1jNEgJFVDvnVnRt803x2EwAuMRwNo34Idhj4ZMi5kbnNjcnlwdC1jZXJ0LnF1YWQ5Lm5ldA' where id = 5"
                     )
-                    // quad9 security
                     db.execSQL(
                         "UPDATE DnsCryptEndpoint set dnsCryptURL = 'sdns://AQMAAAAAAAAAEjE0OS4xMTIuMTEyLjk6ODQ0MyBnyEe4yHWM0SAkVUO-dWdG3zTfHYTAC4xHA2jfgh2GPhkyLmRuc2NyeXB0LWNlcnQucXVhZDkubmV0' where id = 4"
                     )
@@ -940,7 +883,6 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                     db.execSQL("delete from ODoHEndpoint")
                     db.execSQL("delete from DoTEndpoint")
-                    // insert default odoh endpoints
                     db.execSQL(
                         "INSERT INTO ODoHEndpoint(id, name, proxy, resolver, proxyIps, desc, isSelected, isCustom, latency, modifiedDataTime) VALUES(0, 'Cloudflare', '', 'https://odoh.cloudflare-dns.com/dns-query', '', 'Cloudflare ODoH server', 0, 0, 0, 0)"
                     )
@@ -950,7 +892,6 @@ abstract class AppDatabase : RoomDatabase() {
                     db.execSQL(
                         "INSERT INTO ODoHEndpoint(id, name, proxy, resolver, proxyIps, desc, isSelected, isCustom, latency, modifiedDataTime) VALUES(2, 'Ibksturm', '', 'https://ibksturm.synology.me/dns-query', '', 'ODoH target server hosted by Ibksturm. No logs, No Filter, DNSSEC.', 0, 0, 0, 0)"
                     )
-                    // insert default DoT endpoints
                     db.execSQL(
                         "INSERT INTO DoTEndpoint(id, name, url, desc, isSelected, isCustom, isSecure, latency, modifiedDataTime) VALUES(0, 'Cloudflare', 'tls://1dot1dot1dot1.cloudflare-dns.com', 'Cloudflare’s DNS over TLS. No blocking.', 0, 0, 1, 0, 0)"
                     )
@@ -975,7 +916,6 @@ abstract class AppDatabase : RoomDatabase() {
                     db.execSQL(
                         "ALTER TABLE WgConfigFiles ADD COLUMN oneWireGuard INTEGER NOT NULL DEFAULT 0"
                     )
-                    // socks5
                     val pappSocks5 =
                         "CASE WHEN EXISTS (select proxyName from ProxyEndpoint_backup where proxyName = 'Socks5') THEN (select proxyName from ProxyEndpoint_backup where proxyName = 'Socks5') ELSE '' END"
                     val pipSocks5 =
@@ -990,7 +930,6 @@ abstract class AppDatabase : RoomDatabase() {
                         "CASE WHEN EXISTS (select isSelected from ProxyEndpoint_backup where proxyName = 'Socks5') THEN (select isSelected from ProxyEndpoint_backup where proxyName = 'Socks5') ELSE 0 END"
                     val isUDPSocks5 =
                         "CASE WHEN EXISTS (select isUDP from ProxyEndpoint_backup where proxyName = 'Socks5') THEN (select isUDP from ProxyEndpoint_backup where proxyName = 'Socks5') ELSE 0 END"
-                    // orbot
                     val pipOrbot =
                         "CASE WHEN EXISTS (select proxyIP from ProxyEndpoint_backup where proxyName = 'ORBOT') THEN (select proxyIP from ProxyEndpoint_backup where proxyName = 'ORBOT') ELSE '127.0.0.1' END"
                     val portOrbot =
@@ -998,7 +937,6 @@ abstract class AppDatabase : RoomDatabase() {
                     val isSelectedOrbot =
                         "CASE WHEN EXISTS (select isSelected from ProxyEndpoint_backup where proxyName = 'ORBOT') THEN (select isSelected from ProxyEndpoint_backup where proxyName = 'ORBOT') ELSE 0 END"
 
-                    // backup the table ProxyEndpoint
                     db.execSQL("DROP TABLE IF EXISTS ProxyEndpoint_backup")
                     db.execSQL(
                         "CREATE TABLE 'ProxyEndpoint_backup' ('id' INTEGER NOT NULL, 'proxyName' TEXT NOT NULL, 'proxyMode' INTEGER NOT NULL, 'proxyType' TEXT NOT NULL, 'proxyAppName' TEXT NOT NULL, 'proxyIP' TEXT NOT NULL, 'userName' TEXT NOT NULL, 'password' TEXT NOT NULL, 'proxyPort' INTEGER NOT NULL, 'isSelected' INTEGER NOT NULL, 'isCustom' INTEGER NOT NULL, 'isUDP' INTEGER NOT NULL, 'modifiedDataTime' INTEGER NOT NULL, 'latency' INTEGER NOT NULL, PRIMARY KEY (id))"
@@ -1027,7 +965,6 @@ abstract class AppDatabase : RoomDatabase() {
         internal val MIGRATION_21_22: Migration =
             object : Migration(21, 22) {
                 override fun migrate(db: SupportSQLiteDatabase) {
-                    // fix: migration with the WgConfigFiles seen in play store crash
                     try {
                         if (!doesColumnExistInTable(db, "WgConfigFiles", "isLockdown")) {
                             db.execSQL(
@@ -1080,7 +1017,6 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // migration part of v055o
         internal val MIGRATION_24_25: Migration =
             object : Migration(24, 25) {
                 override fun migrate(db: SupportSQLiteDatabase) {
@@ -1195,12 +1131,10 @@ abstract class AppDatabase : RoomDatabase() {
         internal val MIGRATION_26_27: Migration =
             object : Migration(26, 27) {
                 override fun migrate(db: SupportSQLiteDatabase) {
-                    // delete the column isLockdown from WgConfigFiles
                     db.execSQL("CREATE TABLE 'WgConfigFiles_new' ('id' INTEGER NOT NULL, 'name' TEXT NOT NULL, 'configPath' TEXT NOT NULL, 'serverResponse' TEXT NOT NULL, 'isActive' INTEGER NOT NULL, 'isDeletable' INTEGER NOT NULL, 'isCatchAll' INTEGER NOT NULL, 'oneWireGuard' INTEGER NOT NULL, 'useOnlyOnMetered' INTEGER NOT NULL, 'ssidEnabled' INTEGER NOT NULL, 'ssids' TEXT NOT NULL, PRIMARY KEY (id))")
                     db.execSQL("INSERT INTO WgConfigFiles_new SELECT id, name, configPath, serverResponse, isActive, isDeletable, isCatchAll, oneWireGuard, useOnlyOnMetered, ssidEnabled, ssids FROM WgConfigFiles")
                     db.execSQL("DROP TABLE WgConfigFiles")
                     db.execSQL("ALTER TABLE WgConfigFiles_new RENAME TO WgConfigFiles")
-                    // insert new columns with default values (modifiedTs)
                     db.execSQL("ALTER TABLE WgConfigFiles ADD COLUMN modifiedTs INTEGER NOT NULL DEFAULT 0")
                     Logger.i(LOG_TAG_APP_DB, "MIGRATION_26_27: removed isLockdown column")
                     db.execSQL(
@@ -1224,10 +1158,8 @@ abstract class AppDatabase : RoomDatabase() {
         internal val MIGRATION_27_28: Migration =
             object : Migration(27, 28) {
                 override fun migrate(db: SupportSQLiteDatabase) {
-                    // Add modifiedTs column to AppInfo table to track when firewall/proxy rules change
                     try {
                         db.execSQL("ALTER TABLE AppInfo ADD COLUMN modifiedTs INTEGER NOT NULL DEFAULT 0")
-                        // Backfill all existing rows with 0 (already done by DEFAULT 0)
                         Logger.i(LOG_TAG_APP_DB, "MIGRATION_27_28: added modifiedTs column to AppInfo")
                     } catch (e: Exception) {
                         Logger.e(LOG_TAG_APP_DB, "MIGRATION_27_28: modifiedTs column already exists, ignore", e)
@@ -1238,7 +1170,6 @@ abstract class AppDatabase : RoomDatabase() {
         internal val MIGRATION_28_29: Migration =
             object : Migration(28, 29) {
                 override fun migrate(db: SupportSQLiteDatabase) {
-
                     try {
                         db.execSQL("ALTER TABLE AppInfo ADD COLUMN tempAllowEnabled INTEGER NOT NULL DEFAULT 0")
                         db.execSQL("ALTER TABLE AppInfo ADD COLUMN tempAllowExpiryTime INTEGER NOT NULL DEFAULT 0")
@@ -1247,13 +1178,11 @@ abstract class AppDatabase : RoomDatabase() {
                         Logger.e(LOG_TAG_APP_DB, "MIGRATION_28_29: temp allow columns already exist, ignore", e)
                     }
 
-                    // Safety: drop RpnWinServers if it exists from any prior development build
                     try {
                         db.execSQL("DROP INDEX IF EXISTS index_RpnWinServers_countryCode")
                         db.execSQL("DROP INDEX IF EXISTS index_RpnWinServers_isActive")
                         db.execSQL("DROP TABLE IF EXISTS RpnWinServers")
                     } catch (_: Exception) {
-                        // ignore
                     }
 
                     db.execSQL("DROP TABLE IF EXISTS CountryConfig")
@@ -1286,9 +1215,6 @@ abstract class AppDatabase : RoomDatabase() {
                     db.execSQL("CREATE INDEX IF NOT EXISTS index_CountryConfig_isActive ON CountryConfig(isActive)")
                     Logger.i(LOG_TAG_APP_DB, "MIGRATION_28_29: recreated CountryConfig with final schema")
 
-                    // SubscriptionStatus: audit / billing columns
-                    // Each ALTER is guarded individually so a partial prior run cannot leave
-                    // the DB in an inconsistent state.
                     try {
                         db.execSQL("ALTER TABLE SubscriptionStatus ADD COLUMN previousProductId TEXT NOT NULL DEFAULT ''")
                     } catch (_: Exception) {}
@@ -1311,7 +1237,6 @@ abstract class AppDatabase : RoomDatabase() {
                         db.execSQL("UPDATE SubscriptionStatus SET deviceId = 'pip/identity.json' WHERE deviceId != '' AND deviceId != 'pip/identity.json'")
                     } catch (_: Exception) {}
 
-                    // WgConfigFiles: isLockdown column
                     try {
                         db.execSQL("ALTER TABLE WgConfigFiles ADD COLUMN isLockdown INTEGER NOT NULL DEFAULT 0")
                         Logger.i(LOG_TAG_APP_DB, "MIGRATION_28_29: added isLockdown to WgConfigFiles")
@@ -1460,8 +1385,6 @@ abstract class AppDatabase : RoomDatabase() {
                     Logger.i(LOG_TAG_APP_DB, "MIGRATION_33_34: created SmartDnsEndpoint table")
                 }
 
-                // add the three smart dns options; none is selected until the user
-                // explicitly picks one from the smart dns list screen
                 private fun addSmartDnsEndpoints(db: SupportSQLiteDatabase) {
                     with(db) {
                         execSQL(
@@ -1489,14 +1412,6 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // migration part of v057:
-        // 1. replace Mullvad DoT endpoints with Control-D in-place, preserving the
-        //    user's selection (an in-place update that does not touch isSelected
-        //    carries it over automatically)
-        // 2. add ControlD Security (DoH, p1) as a default (non-deletable) endpoint
-        // 3. add DNS4U Extended (DoT) and DNS4U Privacy (DoH) as default endpoints
-        // 4. refresh Quad9 DNSCrypt stamps as per upstream dnscrypt-resolvers list
-        // ref: github.com/DNSCrypt/dnscrypt-resolvers/blob/master/v3/public-resolvers.md
         private val MIGRATION_34_35: Migration =
             object : Migration(34, 35) {
                 override fun migrate(db: SupportSQLiteDatabase) {
@@ -1520,13 +1435,10 @@ abstract class AppDatabase : RoomDatabase() {
                                     "domains.', isCustom = 0 " +
                                     "WHERE id = 4 AND url = 'tls://extended.dns.mullvad.net'"
                         )
-                        // remove any stray mullvad rows not covered by the in-place update
                         execSQL(
                             "DELETE FROM DoTEndpoint WHERE url IN " +
                                     "('tls://adblock.dns.mullvad.net', 'tls://extended.dns.mullvad.net')"
                         )
-                        // seed the defaults if the mullvad rows were already absent;
-                        // isCustom = 0 makes them non-deletable from the ui
                         execSQL(
                             "INSERT OR IGNORE INTO DoTEndpoint(id, name, url, desc, isSelected, " +
                                     "isCustom, isSecure, latency, modifiedDataTime) " +
@@ -1544,8 +1456,6 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
-                // control-d security (doh, p1) as a default endpoint; no explicit id,
-                // mirroring how default doh entries are seeded in MIGRATION_11_12
                 private fun addControlDDefaultDoHEndpoint(db: SupportSQLiteDatabase) {
                     with(db) {
                         execSQL(
@@ -1558,8 +1468,6 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 }
 
-
-                // update quad9 dns crypt stamps as per the upstream public-resolvers list
                 private fun updateQuad9DnsCryptStamps(db: SupportSQLiteDatabase) {
                     with(db) {
                         execSQL(
@@ -1576,7 +1484,29 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
-        // ref: stackoverflow.com/a/57204285
+        // Migration 35 -> 36: Adds port range and connection limit columns to CustomIp
+        internal val MIGRATION_35_36: Migration =
+            object : Migration(35, 36) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    try {
+                        if (!doesColumnExistInTable(db, "CustomIp", "fromPort")) {
+                            db.execSQL("ALTER TABLE CustomIp ADD COLUMN fromPort INTEGER NOT NULL DEFAULT -1")
+                        }
+                    } catch (_: Exception) {}
+                    try {
+                        if (!doesColumnExistInTable(db, "CustomIp", "toPort")) {
+                            db.execSQL("ALTER TABLE CustomIp ADD COLUMN toPort INTEGER NOT NULL DEFAULT -1")
+                        }
+                    } catch (_: Exception) {}
+                    try {
+                        if (!doesColumnExistInTable(db, "CustomIp", "connLimit")) {
+                            db.execSQL("ALTER TABLE CustomIp ADD COLUMN connLimit INTEGER NOT NULL DEFAULT 0")
+                        }
+                    } catch (_: Exception) {}
+                    Logger.i(LOG_TAG_APP_DB, "MIGRATION_35_36: added fromPort, toPort, connLimit to CustomIp")
+                }
+            }
+
         private fun doesColumnExistInTable(
             db: SupportSQLiteDatabase,
             tableName: String,
@@ -1591,9 +1521,6 @@ abstract class AppDatabase : RoomDatabase() {
         }
     }
 
-    // fixme: revisit the links to remove the pragma for each table
-    // https://stackoverflow.com/questions/49030258/how-to-vacuum-roomdatabase
-    // https://stackoverflow.com/questions/50987119/backup-room-databas
     fun checkPoint() {
         appDatabaseRawQueries().checkpoint(SimpleSQLiteQuery(PRAGMA))
         appDatabaseRawQueries().vacuum(SimpleSQLiteQuery("VACUUM"))
@@ -1699,5 +1626,4 @@ abstract class AppDatabase : RoomDatabase() {
     fun wgHopMapRepository() = WgHopMapRepository(wgHopMapDao())
 
     fun subscriptionStatusRepository() = SubscriptionStatusRepository(subscriptionStatusDao())
-
 }
