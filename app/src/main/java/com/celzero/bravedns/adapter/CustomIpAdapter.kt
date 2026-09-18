@@ -27,6 +27,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ImageView
+import androidx.appcompat.app.AlertDialog
 import androidx.core.view.isVisible
 import androidx.core.widget.addTextChangedListener
 import androidx.lifecycle.Lifecycle
@@ -51,6 +52,7 @@ import com.celzero.bravedns.ui.activity.CustomRulesActivity
 import com.celzero.bravedns.ui.bottomsheet.CustomIpRulesBtmSheet
 import com.celzero.bravedns.util.Constants
 import com.celzero.bravedns.util.Constants.Companion.UID_EVERYBODY
+import com.celzero.bravedns.util.IPUtil
 import com.celzero.bravedns.util.SnackbarHelper.italic
 import com.celzero.bravedns.util.UIUtils
 import com.celzero.bravedns.util.UIUtils.fetchColor
@@ -78,17 +80,20 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                 override fun areItemsTheSame(oldConnection: CustomIp, newConnection: CustomIp) =
                     oldConnection.uid == newConnection.uid &&
                             oldConnection.ipAddress == newConnection.ipAddress &&
-                            oldConnection.port == newConnection.port
+                            oldConnection.port == newConnection.port &&
+                            oldConnection.fromPort == newConnection.fromPort &&
+                            oldConnection.toPort == newConnection.toPort &&
+                            oldConnection.protocol == newConnection.protocol
 
                 override fun areContentsTheSame(oldConnection: CustomIp, newConnection: CustomIp) =
                     oldConnection.status == newConnection.status &&
                             oldConnection.proxyCC == newConnection.proxyCC &&
                             oldConnection.proxyId == newConnection.proxyId &&
-                            oldConnection.modifiedDateTime == newConnection.modifiedDateTime
+                            oldConnection.modifiedDateTime == newConnection.modifiedDateTime &&
+                            oldConnection.connLimit == newConnection.connLimit
             }
     }
 
-    // ui component to update/toggle the buttons
     data class ToggleBtnUi(val txtColor: Int, val bgColor: Int)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
@@ -113,7 +118,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
         when (holder) {
             is CustomIpsViewHolderWithHeader -> {
                 holder.update(customIp)
-
             }
             is CustomIpsViewHolderWithoutHeader -> {
                 holder.update(customIp)
@@ -126,7 +130,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
     }
 
     override fun getItemViewType(position: Int): Int {
-        // in case of app specific rules, the header is not required.
         if (type == CustomRulesActivity.RULES.APP_SPECIFIC_RULES) {
             return R.layout.list_item_custom_ip
         }
@@ -145,8 +148,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
     fun clearSelection() {
         selectedItems.clear()
         isSelectionMode = false
-        // Fix: Use notifyItemRangeChanged instead of notifyDataSetChanged for PagingDataAdapter
-        // to avoid IndexOutOfBoundsException from adapter inconsistency
         try {
             if (itemCount > 0) {
                 notifyItemRangeChanged(0, itemCount)
@@ -177,12 +178,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                     fetchColor(context, R.attr.chipBgColorNegative)
                 )
             }
-            IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL -> {
-                ToggleBtnUi(
-                    fetchColor(context, R.attr.chipTextPositive),
-                    fetchColor(context, R.attr.chipBgColorPositive)
-                )
-            }
+            IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL,
             IpRulesManager.IpRuleStatus.TRUST -> {
                 ToggleBtnUi(
                     fetchColor(context, R.attr.chipTextPositive),
@@ -194,21 +190,21 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
 
     private fun findSelectedIpRule(ruleId: Int): IpRulesManager.IpRuleStatus? {
         return when (ruleId) {
-            IpRulesManager.IpRuleStatus.NONE.id -> {
-                IpRulesManager.IpRuleStatus.NONE
-            }
-            IpRulesManager.IpRuleStatus.BLOCK.id -> {
-                IpRulesManager.IpRuleStatus.BLOCK
-            }
-            IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL.id -> {
-                IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL
-            }
-            IpRulesManager.IpRuleStatus.TRUST.id -> {
-                IpRulesManager.IpRuleStatus.TRUST
-            }
-            else -> {
-                null
-            }
+            IpRulesManager.IpRuleStatus.NONE.id -> IpRulesManager.IpRuleStatus.NONE
+            IpRulesManager.IpRuleStatus.BLOCK.id -> IpRulesManager.IpRuleStatus.BLOCK
+            IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL.id -> IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL
+            IpRulesManager.IpRuleStatus.TRUST.id -> IpRulesManager.IpRuleStatus.TRUST
+            else -> null
+        }
+    }
+
+    private fun formatPortLabel(customIp: CustomIp): String {
+        return if (customIp.fromPort != Constants.UNSPECIFIED_PORT && customIp.toPort != Constants.UNSPECIFIED_PORT && customIp.fromPort != customIp.toPort) {
+            "${customIp.fromPort}-${customIp.toPort} [${customIp.protocol}]" + if (customIp.connLimit > 0) " (Limit: ${customIp.connLimit})" else ""
+        } else if (customIp.port != Constants.UNSPECIFIED_PORT && customIp.port != 0) {
+            "${customIp.port} [${customIp.protocol}]"
+        } else {
+            "0 [${customIp.protocol}]"
         }
     }
 
@@ -239,22 +235,13 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                 }
             }
 
-
-            b.customIpLabelTv.text =
-                context.getString(
-                    R.string.ci_ip_label,
-                    customIp.ipAddress,
-                    customIp.port.toString()
-                )
+            b.customIpLabelTv.text = "${customIp.ipAddress}: ${formatPortLabel(customIp)}"
             val status = findSelectedIpRule(customIp.status) ?: return
 
-            // update flag for the available ips
             updateFlagIfAvailable(customIp)
-            // update status in desc and status flag (N/B/W)
             updateStatusUi(status)
 
             b.customIpEditIcon.setOnClickListener { showEditIpDialog(customIp) }
-
             b.customIpExpandIcon.setOnClickListener { showBtmSheet() }
 
             b.customIpContainer.setOnClickListener {
@@ -270,7 +257,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                     isSelectionMode = true
                 }
                 toggleSelection(customIp)
-                // Fix: Use notifyItemChanged for single item instead of notifyDataSetChanged
                 val position = absoluteAdapterPosition
                 if (position != RecyclerView.NO_POSITION && position < itemCount) {
                     notifyItemChanged(position)
@@ -282,7 +268,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             b.customIpContainer.setOnLongClickListener {
                 isSelectionMode = true
                 selectedItems.add(customIp)
-                // Fix: Use notifyItemRangeChanged instead of notifyDataSetChanged
                 try {
                     if (itemCount > 0) {
                         notifyItemRangeChanged(0, itemCount)
@@ -348,7 +333,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             val inetAddr = try {
                 IPAddressString(ip.ipAddress).hostAddress.toInetAddress()
             } catch (e: Exception) {
-                null // invalid ip
+                null
             }
 
             b.customIpFlag.text = getFlag(getCountryCode(inetAddr, context))
@@ -357,7 +342,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
         private fun updateStatusUi(status: IpRulesManager.IpRuleStatus) {
             val now = System.currentTimeMillis()
             val uptime = System.currentTimeMillis() - customIp.modifiedDateTime
-            // returns a string describing 'time' as a time relative to 'now'
             val time =
                 DateUtils.getRelativeTimeSpanString(
                     now - uptime,
@@ -405,7 +389,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                 }
             }
 
-            // update the background color and text color of the status icon
             val t = getToggleBtnUiParams(status)
             b.customIpStatusIcon.setTextColor(t.txtColor)
             b.customIpStatusIcon.backgroundTintList = ColorStateList.valueOf(t.bgColor)
@@ -422,21 +405,13 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             b.customIpCheckbox.isChecked = selectedItems.contains(customIp)
             b.customIpCheckbox.visibility = if (isSelectionMode) View.VISIBLE else View.GONE
 
-            b.customIpLabelTv.text =
-                context.getString(
-                    R.string.ci_ip_label,
-                    customIp.ipAddress,
-                    customIp.port.toString()
-                )
+            b.customIpLabelTv.text = "${customIp.ipAddress}: ${formatPortLabel(customIp)}"
             val status = findSelectedIpRule(customIp.status) ?: return
 
-            // update flag for the available ips
             updateFlagIfAvailable(customIp)
-            // update status in desc and status flag (N/B/W)
             updateStatusUi(status)
 
             b.customIpEditIcon.setOnClickListener { showEditIpDialog(customIp) }
-
             b.customIpExpandIcon.setOnClickListener { showBtmSheet() }
 
             b.customIpContainer.setOnClickListener {
@@ -452,7 +427,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                     isSelectionMode = true
                 }
                 toggleSelection(customIp)
-                // Fix: Use notifyItemChanged for single item instead of notifyDataSetChanged
                 val position = absoluteAdapterPosition
                 if (position != RecyclerView.NO_POSITION && position < itemCount) {
                     notifyItemChanged(position)
@@ -462,7 +436,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             b.customIpContainer.setOnLongClickListener {
                 isSelectionMode = true
                 selectedItems.add(customIp)
-                // Fix: Use notifyItemRangeChanged instead of notifyDataSetChanged
                 try {
                     if (itemCount > 0) {
                         notifyItemRangeChanged(0, itemCount)
@@ -495,7 +468,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             val inetAddr = try {
                 IPAddressString(ip.ipAddress).hostAddress.toInetAddress()
             } catch (e: Exception) {
-                null // invalid ip
+                null
             }
 
             b.customIpFlag.text = getFlag(getCountryCode(inetAddr, context))
@@ -504,7 +477,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
         private fun updateStatusUi(status: IpRulesManager.IpRuleStatus) {
             val now = System.currentTimeMillis()
             val uptime = System.currentTimeMillis() - customIp.modifiedDateTime
-            // returns a string describing 'time' as a time relative to 'now'
             val time =
                 DateUtils.getRelativeTimeSpanString(
                     now - uptime,
@@ -552,7 +524,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                 }
             }
 
-            // update the background color and text color of the status icon
             val t = getToggleBtnUiParams(status)
             b.customIpStatusIcon.setTextColor(t.txtColor)
             b.customIpStatusIcon.backgroundTintList = ColorStateList.valueOf(t.bgColor)
@@ -572,15 +543,32 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
 
         dialog.setCancelable(true)
         dialog.window?.attributes = lp
-        // keep the dialog within the app's max width on expanded windows (foldables/tablets)
         UIUtils.capDialogWidth(dialog)
 
         dBind.daciIpTitle.text = context.getString(R.string.ci_dialog_title)
-        if (customIp.port != 0) {
+
+        // 1. Restore input text (IP, Port or Port Range)
+        if (customIp.fromPort != Constants.UNSPECIFIED_PORT && customIp.toPort != Constants.UNSPECIFIED_PORT && customIp.fromPort != customIp.toPort) {
+            dBind.daciIpEditText.setText("[${customIp.ipAddress}]:${customIp.fromPort}-${customIp.toPort}")
+        } else if (customIp.port != 0 && customIp.port != Constants.UNSPECIFIED_PORT) {
             val ipNetPort = IpRulesManager.joinIpNetPort(customIp.ipAddress, customIp.port)
             dBind.daciIpEditText.setText(ipNetPort)
         } else {
             dBind.daciIpEditText.setText(customIp.ipAddress)
+        }
+
+        // 2. Restore Protocol RadioButton Selection
+        when (customIp.protocol.uppercase()) {
+            "TCP" -> dBind.daciProtoTcp.isChecked = true
+            "UDP" -> dBind.daciProtoUdp.isChecked = true
+            else -> dBind.daciProtoAll.isChecked = true
+        }
+
+        // 3. Restore Connection Limit
+        if (customIp.connLimit > 0) {
+            dBind.daciConnLimitEditText.setText(customIp.connLimit.toString())
+        } else {
+            dBind.daciConnLimitEditText.setText("")
         }
 
         if (customIp.uid == UID_EVERYBODY) {
@@ -596,14 +584,14 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
         }
 
         dBind.daciBlockBtn.setOnClickListener {
-            handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.BLOCK)
+            handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.BLOCK, dialog)
         }
 
         dBind.daciTrustBtn.setOnClickListener {
             if (customIp.uid == UID_EVERYBODY) {
-                handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL)
+                handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL, dialog)
             } else {
-                handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.TRUST)
+                handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.TRUST, dialog)
             }
         }
 
@@ -614,19 +602,43 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
     private fun handleIp(
         dBind: DialogAddCustomIpBinding,
         customIp: CustomIp,
-        status: IpRulesManager.IpRuleStatus
+        status: IpRulesManager.IpRuleStatus,
+        dialog: AlertDialog
     ) {
         ui {
-            val input = dBind.daciIpEditText.text.toString()
+            val input = dBind.daciIpEditText.text.toString().trim()
             val ipString = Utilities.removeLeadingAndTrailingDots(input)
-            var ip: IPAddress? = null
-            var port: Int? = null
 
-            // chances of creating NetworkOnMainThread exception, handling with io operation
+            val selectedProtocol = when (dBind.daciProtocolGroup.checkedRadioButtonId) {
+                R.id.daci_proto_tcp -> "TCP"
+                R.id.daci_proto_udp -> "UDP"
+                else -> "ALL"
+            }
+
+            val connLimit = dBind.daciConnLimitEditText.text.toString().trim().toIntOrNull() ?: 0
+
+            var ip: IPAddress? = null
+            var fromPort = Constants.UNSPECIFIED_PORT
+            var toPort = Constants.UNSPECIFIED_PORT
+
             ioCtx {
-                val ipPair = IpRulesManager.getIpNetPort(ipString)
-                ip = ipPair.first
-                port = ipPair.second
+                if (ipString.contains(":")) {
+                    val parts = ipString.split(":")
+                    val ipPart = parts[0].replace("[", "").replace("]", "").trim()
+                    val portPart = parts.getOrNull(1)?.trim().orEmpty()
+
+                    ip = IpRulesManager.getIpNetPort(ipPart).first
+                    val range = IPUtil.parsePortOrRange(portPart)
+                    if (range != null) {
+                        fromPort = range.fromPort
+                        toPort = range.toPort
+                    }
+                } else {
+                    val pair = IpRulesManager.getIpNetPort(ipString)
+                    ip = pair.first
+                    fromPort = pair.second
+                    toPort = pair.second
+                }
             }
 
             if (ip == null || ipString.isEmpty()) {
@@ -636,29 +648,44 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                 return@ui
             }
 
-            // reject non-CIDR-able input such as "1.1.1.1-55"; the ip trie only
-            // accepts CIDR notation and would reject the rule (see isCidrEnforceable)
             if (!IpRulesManager.isCidrEnforceable(ip)) {
                 dBind.daciFailureTextView.text =
                     context.getString(R.string.ci_dialog_error_invalid_cidr)
                 dBind.daciFailureTextView.visibility = View.VISIBLE
                 return@ui
             }
-            Logger.i(LOG_TAG_UI, "$TAG ip: $ip, port: $port, status: $status")
-            updateCustomIp(customIp, ip, port, status)
+
+            dialog.dismiss()
+            updateCustomIpWithRange(customIp, ip, fromPort, toPort, selectedProtocol, connLimit, status)
         }
     }
 
-    private fun updateCustomIp(
+    private fun updateCustomIpWithRange(
         prev: CustomIp,
         ipString: IPAddress?,
-        port: Int?,
-        status: IpRulesManager.IpRuleStatus
+        fromPort: Int,
+        toPort: Int,
+        protocol: String,
+        connLimit: Int,
+        status: IpRuleStatus
     ) {
-        if (ipString == null) return // invalid ip (ui error shown already)
+        if (ipString == null) return
 
-        io { IpRulesManager.replaceIpRule(prev, ipString, port, status, "", "") }
-        logEvent("Updated Custom IP rule: Prev[$prev], New[IP: $ipString, Port: ${port ?: "0"}, Status: $status]")
+        io {
+            IpRulesManager.removeIpRule(prev.uid, prev.ipAddress, prev.port)
+            IpRulesManager.addIpRuleWithRange(
+                uid = prev.uid,
+                ipstr = ipString,
+                fromPort = fromPort,
+                toPort = toPort,
+                protocol = protocol,
+                connLimit = connLimit,
+                status = status,
+                proxyId = prev.proxyId,
+                proxyCC = prev.proxyCC
+            )
+        }
+        logEvent("Updated Custom IP rule: Prev[$prev], New[IP: $ipString, Range: $fromPort-$toPort, Proto: $protocol, Limit: $connLimit, Status: $status]")
     }
 
     private fun logEvent(details: String) {
