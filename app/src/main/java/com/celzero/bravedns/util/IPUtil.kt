@@ -26,6 +26,15 @@ import kotlin.math.pow
 
 class IPUtil {
 
+    data class PortRange(val fromPort: Int, val toPort: Int)
+
+    data class ParsedCustomRule(
+        val ipAddress: String,
+        val portRange: PortRange,
+        val protocol: String, // "ALL", "TCP", "UDP"
+        val connLimit: Int    // 0 = unlimited, 1, 2, etc.
+    )
+
     companion object {
         // IPv6 address byte positions for embedded IPv4 addresses
         private const val IPV6_EMBEDDED_IPV4_BYTE_POSITION_12 = 12
@@ -47,9 +56,32 @@ class IPUtil {
             return ip.isIPv6
         }
 
+        fun parsePortOrRange(input: String): PortRange? {
+            return try {
+                if (input.contains("-")) {
+                    val parts = input.split("-")
+                    val start = parts[0].trim().toInt()
+                    val end = parts[1].trim().toInt()
+                    if (start in 0..65535 && end in 0..65535 && start <= end) {
+                        PortRange(start, end)
+                    } else {
+                        null
+                    }
+                } else {
+                    val port = input.trim().toInt()
+                    if (port in 0..65535) {
+                        PortRange(port, port)
+                    } else {
+                        null
+                    }
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }
+
         fun ip4in6(ip: IPAddress): IPAddress? {
             if (ip.isIPv4) {
-                // already v4; no need to convert
                 return null
             }
             if (isIpV4Compatible(ip)) {
@@ -57,49 +89,30 @@ class IPUtil {
             }
 
             if (isIpv6Prefix64(ip)) {
-                // get the last 4 bytes from the segment and convert into IPv4 address
                 return ip.toIPv6().getEmbeddedIPv4Address(IPV6_EMBEDDED_IPV4_BYTE_POSITION_12)
             }
 
             if (isIpTeredo(ip)) {
-                // Returns the second and third segments as an IPv4Address
-                // teredo tunnelling will contain the IPv4 address in segment 3 and 4.
-                // 2001::/32 (segment 0 should match 2001, segment 1 should be zero)
-                // sample: 2001:0000:4136:e378:8000:63bf:3fff:fdd2 -> 65.54.227.120
                 return ip.toIPv6().getEmbeddedIPv4Address(IPV6_TEREDO_IPV4_BYTE_POSITION_4)
             }
-
-            // as of now, support for Routing between 6to4 and native IPv6 (protocol type 41) is
-            // not supported in netstack, need to implement those changes once netstack starts
-            // supporting protocol 41, block ipv4 if ipv6 prefix is 2002::
-            // ref: https://en.wikipedia.org/wiki/6to4#Routing_between_6to4_and_native_IPv6
 
             return null
         }
 
-        // for IPv4-Mapped IPv6 Address and IPv4 embedded IPv6 (prefix: 2001:db8::/32)
         private fun isIpV4Compatible(ip: IPAddress): Boolean {
             return ip.isIPv6 && ip.isIPv4Convertible && ip.toIPv4() != null
         }
 
-        // for teredo tunneling
         private fun isIpTeredo(ips: IPAddress): Boolean {
             return ips.toIPv6().isTeredo
         }
 
-        // for IPv6 address with prefix-64
         private fun isIpv6Prefix64(ip: IPAddress): Boolean {
-            // find if there is a valid ipv4 address available for the ipv6 address which
-            // has the first segment value as 64
             val ipv6 = ip.toIPv6()
-            // get the first segment from ipv6 address
             val segment = ipv6.getSegment(0)
-            // Decimal value for the 64(hexa) is 100
             return segment.segmentValue == IPV6_PREFIX_64_SEGMENT_VALUE
         }
 
-
-        // ref: github.com/M66B/NetGuard/blob/master/app/src/main/java/eu/faircode/netguard
         @Throws(UnknownHostException::class)
         fun toCIDR(start: InetAddress?, end: InetAddress?): List<CIDR>? {
             if (start == null || end == null) return null
