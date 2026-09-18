@@ -37,12 +37,10 @@ object IpRulesManager : KoinComponent {
 
     private val db by inject<CustomIpRepository>()
 
-    // max size of ip request look-up cache
     private const val CACHE_MAX_SIZE = 10000L
 
     private val iptree by lazy { Backend.newIpTree() }
 
-    // key-value object for ip look-up
     data class CacheKey(val ipNetPort: String, val uid: Int)
 
     private val resultsCache: Cache<CacheKey, IpRuleStatus> =
@@ -721,7 +719,7 @@ object IpRulesManager : KoinComponent {
         )
         val normalizedIp = padAndNormalize(ipstr)
         val port = if (fromPort == toPort) fromPort else UNSPECIFIED_PORT
-        val c = makeCustomIp(uid, normalizedIp, port, fromPort, toPort, protocol, connLimit, status, wildcard = false, proxyId, proxyCC)
+        val c = makeCustomIp(uid, normalizedIp, port, fromPort, toPort, protocol, connLimit, status, false, proxyId, proxyCC)
         db.insert(c)
         val k = treeKey(normalizedIp)
         if (!k.isNullOrEmpty()) {
@@ -785,7 +783,7 @@ object IpRulesManager : KoinComponent {
         if (isDeleted == 0) {
             db.deleteRule(prevRule.uid, prevRule.ipAddress, prevRule.port)
         }
-        val newRule = makeCustomIp(prevRule.uid, newIpAddrStr, port, prevRule.fromPort, prevRule.toPort, prevRule.protocol, prevRule.connLimit, newStatus, wildcard = false, proxyId, proxyCC)
+        val newRule = makeCustomIp(prevRule.uid, newIpAddrStr, port, prevRule.fromPort, prevRule.toPort, prevRule.protocol, prevRule.connLimit, newStatus, false, proxyId, proxyCC)
         db.insert(newRule)
         val pk = treeKey(prevIpAddrStr)
         if (!pk.isNullOrEmpty()) {
