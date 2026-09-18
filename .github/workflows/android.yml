@@ -43,17 +43,20 @@ jobs:
 
     - name: 🚂 Assemble APK
       run: |
-        ./gradlew ${VARIANT} --no-daemon --build-cache -x test -x lint
+        ./gradlew ${VARIANT} --no-daemon --stacktrace --info -x test -x lint
 
     - name: 📦 Prepare APK Artifact
+      if: always()
       run: |
         mkdir -p dist
-        find app/build/outputs/apk/ -name "*.apk" -exec cp {} dist/ \;
+        find app/build/outputs/apk/ -name "*.apk" -exec cp {} dist/ \; 2>/dev/null || true
         echo "Collected APKs:"
         ls -la dist/
 
     - name: 🚀 Upload Installable APK
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: RethinkDNS-Modded-Debug-APK
         path: dist/*.apk
+        if-no-files-found: ignore
