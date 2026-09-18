@@ -24,18 +24,17 @@ import inet.ipaddr.IPAddressString
 import java.io.Serializable
 
 /**
- * The CustomIp table will contain the firewall rules based on IP address, port and protocol.
- *
- * The rules will be added to the database with the combination of uid, ipaddress, port, protocol.
- * Special case: when the uid is assigned as FirewallRules#EVERYBODY_UID then the rules with
- * combination of ipaddress, port, protocol will be applied for all the available apps.
+ * The CustomIp table contains firewall rules based on IP address, port range, protocol and connection limits.
  */
 @Entity(primaryKeys = ["uid", "ipAddress", "port", "protocol"], tableName = "CustomIp")
 class CustomIp : Serializable {
     var uid: Int = UID_EVERYBODY
     var ipAddress: String = ""
     var port: Int = UNSPECIFIED_PORT
-    var protocol: String = ""
+    var fromPort: Int = UNSPECIFIED_PORT
+    var toPort: Int = UNSPECIFIED_PORT
+    var protocol: String = "ALL" // "ALL", "TCP", "UDP"
+    var connLimit: Int = 0       // 0 = unlimited, 1, 2, etc.
     var isActive: Boolean = true
     var proxyId: String = ""
     var proxyCC: String = ""
@@ -44,7 +43,6 @@ class CustomIp : Serializable {
     var status: Int = 0
     var wildcard: Boolean = false
 
-    // fixme: Is this needed in database as column?
     // IPV4(0), IPV4_WILDCARD(1), IPV6(2), IPV6_WILDCARD(3)
     var ruleType: Int = 0
     var modifiedDateTime: Long = INIT_TIME_MS
@@ -55,7 +53,10 @@ class CustomIp : Serializable {
         c.uid = uid
         c.ipAddress = ipAddress
         c.port = port
+        c.fromPort = fromPort
+        c.toPort = toPort
         c.protocol = protocol
+        c.connLimit = connLimit
         c.isActive = isActive
         c.proxyId = proxyId
         c.proxyCC = proxyCC
@@ -70,6 +71,10 @@ class CustomIp : Serializable {
         if (other !is CustomIp) return false
         if (ipAddress != other.ipAddress) return false
         if (port != other.port) return false
+        if (fromPort != other.fromPort) return false
+        if (toPort != other.toPort) return false
+        if (protocol != other.protocol) return false
+        if (connLimit != other.connLimit) return false
         if (uid != other.uid) return false
         if (status != other.status) return false
         return true
@@ -79,6 +84,10 @@ class CustomIp : Serializable {
         var result = this.uid.hashCode()
         result += result * 31 + this.ipAddress.hashCode()
         result += result * 31 + this.port
+        result += result * 31 + this.fromPort
+        result += result * 31 + this.toPort
+        result += result * 31 + this.protocol.hashCode()
+        result += result * 31 + this.connLimit
         result += result * 31 + this.status
         return result
     }
