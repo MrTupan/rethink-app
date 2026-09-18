@@ -117,7 +117,7 @@ abstract class AppDatabase : RoomDatabase() {
                 DATABASE_NAME
             )
                 .fallbackToDestructiveMigration()
-                .createFromAsset(DATABASE_PATH)
+              //  .createFromAsset(DATABASE_PATH)
                 .addCallback(roomCallback)
                 .setJournalMode(JournalMode.AUTOMATIC)
                 .addMigrations(MIGRATION_1_2)
