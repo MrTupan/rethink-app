@@ -48,6 +48,7 @@ import com.celzero.bravedns.databinding.ListItemCustomIpBinding
 import com.celzero.bravedns.service.EventLogger
 import com.celzero.bravedns.service.FirewallManager
 import com.celzero.bravedns.service.IpRulesManager
+import com.celzero.bravedns.service.IpRulesManager.IpRuleStatus
 import com.celzero.bravedns.ui.activity.CustomRulesActivity
 import com.celzero.bravedns.ui.bottomsheet.CustomIpRulesBtmSheet
 import com.celzero.bravedns.util.Constants
@@ -164,22 +165,22 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             .into(mIconImageView)
     }
 
-    private fun getToggleBtnUiParams(id: IpRulesManager.IpRuleStatus): ToggleBtnUi {
+    private fun getToggleBtnUiParams(id: IpRuleStatus): ToggleBtnUi {
         return when (id) {
-            IpRulesManager.IpRuleStatus.NONE -> {
+            IpRuleStatus.NONE -> {
                 ToggleBtnUi(
                     fetchColor(context, R.attr.chipTextNeutral),
                     fetchColor(context, R.attr.chipBgColorNeutral)
                 )
             }
-            IpRulesManager.IpRuleStatus.BLOCK -> {
+            IpRuleStatus.BLOCK -> {
                 ToggleBtnUi(
                     fetchColor(context, R.attr.chipTextNegative),
                     fetchColor(context, R.attr.chipBgColorNegative)
                 )
             }
-            IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL,
-            IpRulesManager.IpRuleStatus.TRUST -> {
+            IpRuleStatus.BYPASS_UNIVERSAL,
+            IpRuleStatus.TRUST -> {
                 ToggleBtnUi(
                     fetchColor(context, R.attr.chipTextPositive),
                     fetchColor(context, R.attr.chipBgColorPositive)
@@ -188,12 +189,12 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
         }
     }
 
-    private fun findSelectedIpRule(ruleId: Int): IpRulesManager.IpRuleStatus? {
+    private fun findSelectedIpRule(ruleId: Int): IpRuleStatus? {
         return when (ruleId) {
-            IpRulesManager.IpRuleStatus.NONE.id -> IpRulesManager.IpRuleStatus.NONE
-            IpRulesManager.IpRuleStatus.BLOCK.id -> IpRulesManager.IpRuleStatus.BLOCK
-            IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL.id -> IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL
-            IpRulesManager.IpRuleStatus.TRUST.id -> IpRulesManager.IpRuleStatus.TRUST
+            IpRuleStatus.NONE.id -> IpRuleStatus.NONE
+            IpRuleStatus.BLOCK.id -> IpRuleStatus.BLOCK
+            IpRuleStatus.BYPASS_UNIVERSAL.id -> IpRuleStatus.BYPASS_UNIVERSAL
+            IpRuleStatus.TRUST.id -> IpRuleStatus.TRUST
             else -> null
         }
     }
@@ -339,7 +340,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             b.customIpFlag.text = getFlag(getCountryCode(inetAddr, context))
         }
 
-        private fun updateStatusUi(status: IpRulesManager.IpRuleStatus) {
+        private fun updateStatusUi(status: IpRuleStatus) {
             val now = System.currentTimeMillis()
             val uptime = System.currentTimeMillis() - customIp.modifiedDateTime
             val time =
@@ -350,7 +351,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                     DateUtils.FORMAT_ABBREV_RELATIVE
                 )
             when (status) {
-                IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL -> {
+                IpRuleStatus.BYPASS_UNIVERSAL -> {
                     b.customIpStatusIcon.text =
                         context.getString(R.string.ci_bypass_universal_initial)
                     b.customIpStatusTv.text =
@@ -360,7 +361,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                             time
                         )
                 }
-                IpRulesManager.IpRuleStatus.BLOCK -> {
+                IpRuleStatus.BLOCK -> {
                     b.customIpStatusIcon.text = context.getString(R.string.ci_blocked_initial)
                     b.customIpStatusTv.text =
                         context.getString(
@@ -369,7 +370,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                             time
                         )
                 }
-                IpRulesManager.IpRuleStatus.NONE -> {
+                IpRuleStatus.NONE -> {
                     b.customIpStatusIcon.text = context.getString(R.string.ci_no_rule_initial)
                     b.customIpStatusTv.text =
                         context.getString(
@@ -378,7 +379,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                             time
                         )
                 }
-                IpRulesManager.IpRuleStatus.TRUST -> {
+                IpRuleStatus.TRUST -> {
                     b.customIpStatusIcon.text = context.getString(R.string.ci_trust_initial)
                     b.customIpStatusTv.text =
                         context.getString(
@@ -474,7 +475,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             b.customIpFlag.text = getFlag(getCountryCode(inetAddr, context))
         }
 
-        private fun updateStatusUi(status: IpRulesManager.IpRuleStatus) {
+        private fun updateStatusUi(status: IpRuleStatus) {
             val now = System.currentTimeMillis()
             val uptime = System.currentTimeMillis() - customIp.modifiedDateTime
             val time =
@@ -485,7 +486,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                     DateUtils.FORMAT_ABBREV_RELATIVE
                 )
             when (status) {
-                IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL -> {
+                IpRuleStatus.BYPASS_UNIVERSAL -> {
                     b.customIpStatusIcon.text =
                         context.getString(R.string.ci_bypass_universal_initial)
                     b.customIpStatusTv.text =
@@ -495,7 +496,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                             time
                         )
                 }
-                IpRulesManager.IpRuleStatus.BLOCK -> {
+                IpRuleStatus.BLOCK -> {
                     b.customIpStatusIcon.text = context.getString(R.string.ci_blocked_initial)
                     b.customIpStatusTv.text =
                         context.getString(
@@ -504,7 +505,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                             time
                         )
                 }
-                IpRulesManager.IpRuleStatus.NONE -> {
+                IpRuleStatus.NONE -> {
                     b.customIpStatusIcon.text = context.getString(R.string.ci_no_rule_initial)
                     b.customIpStatusTv.text =
                         context.getString(
@@ -513,7 +514,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
                             time
                         )
                 }
-                IpRulesManager.IpRuleStatus.TRUST -> {
+                IpRuleStatus.TRUST -> {
                     b.customIpStatusIcon.text = context.getString(R.string.ci_trust_initial)
                     b.customIpStatusTv.text =
                         context.getString(
@@ -547,7 +548,6 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
 
         dBind.daciIpTitle.text = context.getString(R.string.ci_dialog_title)
 
-        // 1. Restore input text (IP, Port or Port Range)
         if (customIp.fromPort != Constants.UNSPECIFIED_PORT && customIp.toPort != Constants.UNSPECIFIED_PORT && customIp.fromPort != customIp.toPort) {
             dBind.daciIpEditText.setText("[${customIp.ipAddress}]:${customIp.fromPort}-${customIp.toPort}")
         } else if (customIp.port != 0 && customIp.port != Constants.UNSPECIFIED_PORT) {
@@ -557,14 +557,12 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
             dBind.daciIpEditText.setText(customIp.ipAddress)
         }
 
-        // 2. Restore Protocol RadioButton Selection
         when (customIp.protocol.uppercase()) {
             "TCP" -> dBind.daciProtoTcp.isChecked = true
             "UDP" -> dBind.daciProtoUdp.isChecked = true
             else -> dBind.daciProtoAll.isChecked = true
         }
 
-        // 3. Restore Connection Limit
         if (customIp.connLimit > 0) {
             dBind.daciConnLimitEditText.setText(customIp.connLimit.toString())
         } else {
@@ -584,14 +582,14 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
         }
 
         dBind.daciBlockBtn.setOnClickListener {
-            handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.BLOCK, dialog)
+            handleIp(dBind, customIp, IpRuleStatus.BLOCK, dialog)
         }
 
         dBind.daciTrustBtn.setOnClickListener {
             if (customIp.uid == UID_EVERYBODY) {
-                handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.BYPASS_UNIVERSAL, dialog)
+                handleIp(dBind, customIp, IpRuleStatus.BYPASS_UNIVERSAL, dialog)
             } else {
-                handleIp(dBind, customIp, IpRulesManager.IpRuleStatus.TRUST, dialog)
+                handleIp(dBind, customIp, IpRuleStatus.TRUST, dialog)
             }
         }
 
@@ -602,7 +600,7 @@ class CustomIpAdapter(private val context: Context, private val type: CustomRule
     private fun handleIp(
         dBind: DialogAddCustomIpBinding,
         customIp: CustomIp,
-        status: IpRulesManager.IpRuleStatus,
+        status: IpRuleStatus,
         dialog: AlertDialog
     ) {
         ui {
